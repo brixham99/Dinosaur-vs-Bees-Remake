@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+highscore.json
+shots/
+# raw generated art (JPG); only the processed PNGs in assets/ are committed
+raw/
