@@ -7,7 +7,7 @@ import pygame
 
 from . import assets
 from .assets import THEMES
-from .settings import (CHOMP_COOLDOWN, CHOMP_TIME, DINO_BELLY, DINO_BELLY_SHADE,
+from .settings import (CHOMP_COOLDOWN, CHOMP_TIME, DINO_BELLY, DINO_BELLY_SHADE, DINO_GREEN_DARK,
                        DINO_GREEN, DINO_GREEN_LIGHT, DINO_OUTLINE, DINO_PLATE,
                        DINO_SPOT_RIM,
                        INVULNERABLE_TIME, WIDTH)
@@ -397,35 +397,78 @@ class Dino:
         return out
 
     # ----------------------------------------------------------------- draw
+    TURN_STEP = 30   # degrees between turn frames: 30, 60, 90 (front), 120, 150
+
+    def turn_view(self):
+        """(yaw degrees snapped to a turn frame, mirrored?) for the current turn."""
+        step = int(round(180 * smoothstep(self.turn) / self.TURN_STEP)) * self.TURN_STEP
+        return step, step > 90
+
     def draw(self, surf, theme):
-        if self.turn == 0.0 and self.pivot == self.x:
+        step, mirrored = self.turn_view()
+        if step == 0 and self.pivot == self.x:
+            self.turn_cache = {}
             self._draw_model(surf, theme, 0)
             return
-        # draw him facing right into a buffer, then turn it: a horizontal
-        # squash through edge-on (smooth-scaled, so antialiased) with a touch
-        # of shade while he is side-on to the light, mirrored past half-way
         if not hasattr(self, "turn_buf"):
             self.turn_buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, surf.get_height()), pygame.SRCALPHA)
+            self.head_buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, surf.get_height()), pygame.SRCALPHA)
+            self.turn_cache = {}
         buf = self.turn_buf
-        buf.fill((0, 0, 0, 0))
         ox = self.x - BUF_LEFT
-        self._draw_model(buf, theme, ox)
-        s = self.xscale
-        k = max(TURN_MIN_SCALE, abs(s))
-        bw, bh = buf.get_size()
-        if k < 0.999:
-            img = pygame.transform.smoothscale(buf, (max(2, int(round(bw * k))), bh))
-            shade = int(255 * (1.0 - 0.28 * (1.0 - k)))
-            img.fill((shade, shade, shade), special_flags=pygame.BLEND_RGB_MULT)
-        else:
-            img = buf
-        if s < 0:
+        if step in (0, 180):
+            self.turn_cache = {}
+            buf.fill((0, 0, 0, 0))
+            self._draw_model(buf, theme, ox)
+            img = pygame.transform.flip(buf, True, False) if step == 180 else buf
+            left = self.pivot - BUF_RIGHT if step == 180 else self.pivot - BUF_LEFT
+            surf.blit(img, (round(left), 0))
+            return
+        key = (step, theme, self.invuln > 0 and int(self.invuln * 12) % 2 == 0)
+        if key not in self.turn_cache:
+            self.turn_cache = {k: v for k, v in self.turn_cache.items() if k[0] == step}
+            self.turn_cache[key] = self._build_turn_frame(theme, ox, 180 - step if mirrored else step)
+        img, off = self.turn_cache[key]
+        if mirrored:
             img = pygame.transform.flip(img, True, False)
-        sign = 1 if s >= 0 else -1
-        left = self.pivot + min(-BUF_LEFT * k * sign, BUF_RIGHT * k * sign)
+            left = self.pivot - (img.get_width() + off)
+        else:
+            left = self.pivot + off
         surf.blit(img, (round(left), 0))
 
-    def _draw_model(self, surf, theme, ox):
+    def _build_turn_frame(self, theme, ox, phi):
+        from . import turn
+        buf, hb = self.turn_buf, self.head_buf
+        buf.fill((0, 0, 0, 0))
+        hb.fill((0, 0, 0, 0))
+        self._draw_model(buf, theme, ox, head_surf=hb, skip_neck=True)
+        rect = hb.get_bounding_rect(min_alpha=8)
+        side = hb.subsurface(rect).copy()
+        if not hasattr(self.art, "front_heads"):
+            head_art = assets.load("dino_head.png")
+            self.art.front_heads = [turn.build_front_head(assets.tint(head_art, *th["sprite"]), HEAD_SCALE, {
+                **self.art.neck_cols[i], "dark": assets.tint_colour(DINO_GREEN_DARK, *th["sprite"])})
+                for i, th in enumerate(THEMES)]
+        front = self.art.front_heads[theme]
+        cx, cy, tilt = self.body_pose()
+        fw, fh = self.art.frame_size
+        body_rect = pygame.Rect(0, 0, fw, fh)
+        body_rect.center = (round(cx - ox), round(cy))
+        k = self.k
+        legs = [(body_rect.left + x0 * k, body_rect.left + x1 * k, far) for x0, x1, _, far in LEGS]
+        hinge = body_rect.top + LEG_HINGE_Y * k
+        g = self.geometry()
+        pts = g["pts"] - np.array([ox, 0.0])
+        der = g["der"]
+        tang = der / np.maximum(np.linalg.norm(der, axis=1, keepdims=True), 1e-6)
+        nup = np.stack([tang[:, 1], -tang[:, 0]], axis=1)
+        keep = g["ts"] >= -0.02
+        neck = (pts[keep], np.array([self.neck_width(t) for t in g["ts"][keep]]), nup[keep], g["ts"][keep],
+                self.art.neck_cols[theme])
+        return turn.build_frame(buf, cx - ox, self.feet_y, body_rect, hinge, legs, phi,
+                                ({"side": side, "front": front}, rect.center), neck)
+
+    def _draw_model(self, surf, theme, ox, head_surf=None, skip_neck=False):
         g = self.geometry()
         cols = self.art.neck_cols[theme]
         blink = self.invuln > 0 and int(self.invuln * 12) % 2 == 0
@@ -439,7 +482,7 @@ class Dino:
             img.set_alpha(alpha)
         surf.blit(img, img.get_rect(center=(round(cx - ox), round(cy))))
 
-        neck = self._render_neck(g, cols)
+        neck = None if skip_neck else self._render_neck(g, cols)
         if neck is not None:
             ns, pos = neck
             if alpha:
@@ -457,7 +500,7 @@ class Dino:
         rw, rh = himg.get_size()
         if alpha:
             himg.set_alpha(alpha)
-        surf.blit(himg, (round(g["p3"][0] - rx - rw / 2 - ox), round(g["p3"][1] - ry - rh / 2)))
+        (head_surf or surf).blit(himg, (round(g["p3"][0] - rx - rw / 2 - ox), round(g["p3"][1] - ry - rh / 2)))
 
     def _render_neck(self, g, cols):
         ss = self.ss
