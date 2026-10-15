@@ -25,9 +25,17 @@ from dinobees.dino import Dino, DinoArt
 from dinobees.settings import (BASE_WALK_SPEED, BEES_PER_LEVEL, DINO_X, DT, FPS,
                                HEIGHT, HIGHSCORE_FILE, MAX_HEARTS, MAX_WALK_SPEED,
                                TITLE, WALK_SPEED_PER_LEVEL, WIDTH)
+from dinobees.scores import NAME_MAX, TOP_N, Flags, Leaderboard, clean_name
+from dinobees.settings import ASSET_DIR
 from dinobees.sfx import Sound
 from dinobees.world import World
 
+MUSIC_FILE = os.path.join(ASSET_DIR, "music", "dino_loop.ogg")
+TITLE_PANEL_TIME = 7.0       # title alternates: how to play <-> Top 10, 7 s each
+BOARD_REFRESH = 3600.0       # re-fetch the Top 10 (and retry unsent scores) hourly
+DEMO_SCORES = [("Archie", 2480, "GB"), ("Holly", 2210, "GB"), ("Rex", 1890, "US"), ("Nathan", 1650, "GB"),
+               ("Kai", 1400, "AU"), ("Lena", 1220, "DE"), ("Sean", 980, "IE"), ("Zoe", 760, "FR"),
+               ("Marco", 540, "IT"), ("Pip", 320, "GB")]
 GOLD = (255, 214, 90)
 CREAM = (255, 248, 225)
 
@@ -80,12 +88,23 @@ class Game:
         self.heart_empty = ui.make_heart(40, False)
         self.red_flash = pygame.Surface((WIDTH, HEIGHT)).convert()
         self.red_flash.fill((220, 20, 30))
-        self.title_panel = ui.panel((540, 252))
+        self.title_panel = ui.panel((540, 287))
         self.dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.dim.fill((8, 10, 24, 150))
 
         self.hs_path = args.highscore_file or HIGHSCORE_FILE
-        self.high_score = load_high_score(self.hs_path)
+        online = not (args.offline or args.frames)
+        self.board = Leaderboard(online=online, **({"path": args.scores_file} if args.scores_file else {}))
+        if args.demo_scores:
+            self.board.entries = list(DEMO_SCORES)   # shown only, never sent
+        self.flags = Flags(download=not args.offline)
+        self.board.refresh()
+        self.board_t = 0.0
+        self.high_score = max(load_high_score(self.hs_path), self.board.high_score())
+        self.entry_active = False
+        self.entry_name = ""
+        self.entry_note = ""
+        self.title_t = 0.0
         # bees fly between just under the top of the screen and just above the grass;
         # red ones stay high enough that the neck can always be lowered beneath them
         self.spawner = Spawner(self.rng, top=70, bottom=self.world.grass_y - 55,
@@ -97,6 +116,7 @@ class Game:
         self.reset_game(level=1)
         self.title_bees = []
         self.world.set_theme(0, instant=True)
+        self.sound.start_music(MUSIC_FILE)   # paused while the sound is off
 
     # ------------------------------------------------------------ lifecycle
     def reset_game(self, level=1):
@@ -141,6 +161,12 @@ class Game:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 return False
+            if self.entry_active:
+                if ev.type == pygame.TEXTINPUT:
+                    self.entry_text(ev.text)
+                elif ev.type == pygame.KEYDOWN:
+                    self.entry_key(ev.key)
+                continue
             if ev.type != pygame.KEYDOWN:
                 continue
             k = ev.key
@@ -168,8 +194,47 @@ class Game:
                     self.start_game()
                 elif k == pygame.K_ESCAPE:
                     self.state = "title"
+                    self.title_t = 0.0
+                    self.board.refresh()
                     self.world.set_theme(0)
         return True
+
+    # ----------------------------------------------------------- name entry
+    def entry_text(self, text):
+        for ch in text:
+            if ch.isascii() and (ch.isalnum() or ch == " ") and len(self.entry_name) < NAME_MAX:
+                if ch == " " and (not self.entry_name or self.entry_name.endswith(" ")):
+                    continue
+                self.entry_name += ch
+
+    def entry_key(self, key):
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            name = clean_name(self.entry_name)
+            if not name:
+                return          # type a name first (Esc skips)
+            self.entry_active = False
+            self.entry_note = name
+            self.board.submit(name, self.score)
+            pygame.key.stop_text_input()
+            self.over_timer = min(self.over_timer, 0.8)
+        elif key == pygame.K_ESCAPE:
+            self.entry_active = False
+            self.entry_note = ""
+            pygame.key.stop_text_input()
+        elif key == pygame.K_BACKSPACE:
+            self.entry_name = self.entry_name[:-1]
+
+    def entry_status(self):
+        name = self.entry_note
+        if self.score <= 0:
+            return ""
+        if not name:
+            return "Score not sent"
+        if not self.board.online:
+            return f"Saved as {name}"
+        if (name, self.score) in self.board.pending:
+            return f"Sending as {name}…" if self.board.busy else "Offline – will send later"
+        return f"Score sent as {name}"
 
     # --------------------------------------------------------------- update
     def update(self, dt):
@@ -179,8 +244,18 @@ class Game:
         keys = pygame.key.get_pressed()
         up = keys[pygame.K_UP] or keys[pygame.K_w]
         down = keys[pygame.K_DOWN] or keys[pygame.K_s]
+        if self.state == "play" and self.dying <= 0 and not self.args.autoplay:
+            left = keys[pygame.K_LEFT] or keys[pygame.K_a]
+            right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+            if left != right:
+                self.dino.face(-1 if left else 1)
 
+        self.board_t += dt
+        if self.board_t > BOARD_REFRESH:
+            self.board_t = 0.0
+            self.board.refresh()
         if self.state == "title":
+            self.title_t += dt
             self.update_title(dt)
             if self.args.autoplay and self.frame > 40:
                 self.start_game()
@@ -194,8 +269,11 @@ class Game:
         # walking speed eases to the level's pace, or to a halt when he faints
         target = 0.0 if self.dying > 0 or self.state == "gameover" else self.target_walk_speed()
         self.walk_speed += (target - self.walk_speed) * min(1.0, dt * (1.2 if target == 0 else 2.0))
-        self.world.update(dt, self.walk_speed)
-        self.dino.update(dt, up and self.state == "play", down and self.state == "play", self.walk_speed)
+        # the world scrolls the way he is walking: it slows to a stop as he
+        # turns edge-on and runs backwards once he is facing left
+        heading = self.walk_speed * self.dino.xscale
+        self.world.update(dt, heading)
+        self.dino.update(dt, up and self.state == "play", down and self.state == "play", heading)
 
         if self.state == "play" and self.dying <= 0:
             for b in self.spawner.update(dt, len(self.bees)):
@@ -248,6 +326,9 @@ class Game:
             if not b.active or b.state != "fly":
                 continue
             br = b.radius
+            if d.from_behind(b.vx) and self.touches(b, mx, my, mr, hx, hy, hr, neck, body):
+                self.bounce(b)
+                continue
             dm = math.hypot(b.x - mx, b.y - my)
             dh = math.hypot(b.x - hx, b.y - hy)
             on_head = dm < mr + br or dh < hr + br
@@ -275,6 +356,29 @@ class Game:
                             break
             if hit and d.invuln <= 0:
                 self.sting(b)
+
+    @staticmethod
+    def touches(b, mx, my, mr, hx, hy, hr, neck, body):
+        br = b.radius
+        if math.hypot(b.x - mx, b.y - my) < mr + br or math.hypot(b.x - hx, b.y - hy) < hr + br:
+            return True
+        for (cx, cy), r in neck + body:
+            if (b.x - cx) ** 2 + (b.y - cy) ** 2 < (r + br * 0.8) ** 2:
+                return True
+        return False
+
+    def bounce(self, b):
+        """A bee catching him up from behind glances off the armoured plates
+        along his back: no sting, but he can't eat it either."""
+        b.state = "flee"
+        self.sound.play("bonk", 0.7)
+        self.burst(b.x, b.y, [(255, 255, 255), (200, 220, 255), (255, 240, 160)], 10, 160)
+        if b.kind == "red":
+            self.stats["bonks"] = self.stats.get("bonks", 0) + 1
+            self.floaters.append([ui.text("Bonk!", 32, (180, 220, 255), outline=2), b.x, b.y - 40, 0.9])
+            self.log("a red bee bounced off his back")
+        elif self.combo:
+            self.combo = 0   # a yellow bee that gets away still breaks the combo
 
     def eat(self, b):
         b.state = "eaten"
@@ -351,6 +455,12 @@ class Game:
             self.high_score = self.score
             self.new_high = True
             save_high_score(self.hs_path, self.score)
+        self.board.record_local(self.score)
+        self.entry_note = ""
+        if self.score > 0 and not self.args.autoplay:
+            self.entry_active = True
+            self.entry_name = self.board.last_name
+            pygame.key.start_text_input()
         self.log(f"game over: score {self.score}, level {self.level}, eaten {self.eaten}"
                  f"{' (new high score)' if self.new_high else ''}")
 
@@ -496,31 +606,63 @@ class Game:
         cx = 968
         ui.blit_text(s, "Dinosaur", 100, (cx - 70, 22 + bob), GOLD, anchor="midtop", outline=6)
         ui.blit_text(s, "vs Bees", 78, (cx + 120, 120 - bob), (255, 236, 120), anchor="midtop", outline=5)
-        pw, ph = 540, 252
-        px, py = cx - pw // 2, 236
+        pw, ph = 540, 287
+        px, py = cx - pw // 2, 230
         s.blit(self.title_panel, (px, py))
+        if int(self.title_t / TITLE_PANEL_TIME) % 2 == 1 or self.args.show_top10:
+            self.draw_top10(px, py, pw, ph)
+        else:
+            self.draw_how_to(px, py)
+        pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 4))
+        img = ui.text("Press Enter to start", 46, (255, 255, 255), outline=3)
+        img.set_alpha(int(255 * pulse))
+        s.blit(img, img.get_rect(center=(cx, py + ph + 46)))
+        img.set_alpha(None)
+        self.high_score = max(self.high_score, self.board.high_score())
+        if self.high_score:
+            ui.blit_text(s, f"Best {self.high_score:,}", 28, (cx, py + ph + 78), (255, 236, 200), anchor="midtop",
+                         outline=2)
+        ui.blit_text(s, "A remake of Dinosaur vs Bees by brixham99", 18, (WIDTH - 14, HEIGHT - 10),
+                     (240, 240, 240), anchor="bottomright", outline=1)
+
+    def draw_top10(self, px, py, pw, ph):
+        s = self.screen
+        cx = px + pw // 2
+        ui.blit_text(s, "Top 10 Scores", 30, (cx, py + 10), GOLD, anchor="midtop")
+        rows = self.board.top(TOP_N)
+        if not rows:
+            msg = {"loading": "Fetching the scores…", "offline": "Scores unavailable offline"}.get(
+                self.board.status, "No scores yet – be the first!")
+            ui.blit_text(s, msg, 24, (cx, py + ph // 2), CREAM, anchor="center")
+            return
+        for i, (name, score, country) in enumerate(rows):
+            y = py + 52 + i * 23
+            col = GOLD if i == 0 else CREAM
+            ui.blit_text(s, f"{i + 1}.", 21, (px + 120, y), col, anchor="topright", shadow=False)
+            flag = self.flags.get(country) if country else None
+            if flag:
+                s.blit(flag, (px + 134, y + 5))
+            ui.blit_text(s, name, 21, (px + 172, y), col, shadow=False)
+            ui.blit_text(s, f"{score:,}", 21, (px + pw - 120, y), col, anchor="topright", shadow=False)
+
+    def draw_how_to(self, px, py):
+        s = self.screen
+        cx = px + 270
         ui.blit_text(s, "Eat the yellow bees. Dodge the angry red ones!", 25, (cx, py + 16), CREAM, anchor="midtop")
         lines = [
             ("Up / W", "raise the neck"),
             ("Down / S", "lower the neck"),
+            ("Left / Right", "turn round"),
             ("Space", "chomp!"),
             ("P / Esc", "pause"),
             ("M", "sound on / off"),
         ]
         for i, (k, v) in enumerate(lines):
-            y = py + 62 + i * 35
+            y = py + 58 + i * 33
             ui.blit_text(s, k, 26, (px + 228, y), GOLD, anchor="topright")
             ui.blit_text(s, v, 26, (px + 250, y), CREAM)
-        pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 4))
-        img = ui.text("Press Enter to start", 46, (255, 255, 255), outline=3)
-        img.set_alpha(int(255 * pulse))
-        s.blit(img, img.get_rect(center=(cx, py + ph + 52)))
-        img.set_alpha(None)
-        if self.high_score:
-            ui.blit_text(s, f"Best {self.high_score:,}", 28, (cx, py + ph + 86), (255, 236, 200), anchor="midtop",
-                         outline=2)
-        ui.blit_text(s, "A remake of Dinosaur vs Bees by brixham99", 18, (WIDTH - 14, HEIGHT - 10),
-                     (240, 240, 240), anchor="bottomright", outline=1)
+        ui.blit_text(s, "Red bees bounce off his back: turn round!", 21, (cx, py + 58 + len(lines) * 33 + 2),
+                     (200, 225, 255), anchor="midtop")
 
     def draw_pause(self):
         s = self.screen
@@ -547,6 +689,18 @@ class Game:
             ui.blit_text(s, f"Best {self.high_score:,}", 36, (WIDTH // 2, cy + 45), (255, 236, 200), anchor="center", outline=2)
         ui.blit_text(s, f"Bees eaten {self.eaten}    Best combo {self.best_combo}    Level {self.level}", 28,
                      (WIDTH // 2, cy + 100), (230, 230, 240), anchor="center", outline=2)
+        if self.entry_active:
+            caret = "_" if int(self.over_timer * 2.5) % 2 == 0 else " "
+            ui.blit_text(s, "Type your name for the Top 10:", 30, (WIDTH // 2, cy + 150), CREAM, anchor="center",
+                         outline=2)
+            ui.blit_text(s, (self.entry_name + caret) if self.entry_name or caret != " " else " ", 46,
+                         (WIDTH // 2, cy + 200), GOLD, anchor="center", outline=3)
+            ui.blit_text(s, "Enter to send  ·  Esc to skip", 24, (WIDTH // 2, cy + 245), (220, 220, 235),
+                         anchor="center")
+            return
+        note = self.entry_status()
+        if note:
+            ui.blit_text(s, note, 26, (WIDTH // 2, cy + 135), (200, 225, 255), anchor="center", outline=2)
         if self.over_timer > 0.8:
             pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(self.over_timer * 4))
             img = ui.text("Press Enter to play again", 42, (255, 255, 255), outline=3)
@@ -618,6 +772,11 @@ def parse_args(argv=None):
     p.add_argument("--mute", action="store_true", help="start with the sound off")
     p.add_argument("--hitboxes", action="store_true", help="draw the collision shapes (F3 toggles)")
     p.add_argument("--highscore-file", metavar="PATH", help="where to keep the high score")
+    p.add_argument("--scores-file", metavar="PATH", help="where to keep the Top 10 cache and unsent scores")
+    p.add_argument("--offline", action="store_true", help="never touch the network (no Top 10 updates)")
+    p.add_argument("--demo-scores", action="store_true",
+                   help="debug: fill the Top 10 with sample names (shown only, never sent)")
+    p.add_argument("--show-top10", action="store_true", help="debug: keep the Top 10 on the title screen")
     return p.parse_args(argv)
 
 

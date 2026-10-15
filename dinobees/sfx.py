@@ -79,6 +79,10 @@ def synth_all():
     hum = (2 * ((180 * t) % 1.0) - 1) * 0.5 + np.sin(2 * np.pi * 360 * t) * 0.3
     hum *= 0.6 + 0.4 * np.sin(2 * np.pi * 6 * t)
     s["buzz"] = hum * 0.12
+    # bonk: a bee glancing off his armoured back, a hollow knock and a ting
+    knock = _tone(lambda t: 260 - 500 * t, 0.12, "tri", 0.5, 0.001, 0.1)
+    ting = _tone(1320, 0.18, "sine", 0.18, 0.002, 0.16)
+    s["bonk"] = _mix(knock, ting)
     return s
 
 
@@ -126,9 +130,30 @@ class Sound:
         if self.buzz_channel is not None:
             self.buzz_channel.set_volume(max(0.0, min(1.0, level)) * 0.5)
 
+    def start_music(self, path, volume=0.4):
+        """Loop the Dino Loop chiptune quietly under everything."""
+        self.music_path = path
+        if not self.ok:
+            return False
+        try:
+            pygame.mixer.music.load(path)
+            pygame.mixer.music.set_volume(volume)
+            pygame.mixer.music.play(loops=-1)
+            if self.muted:
+                pygame.mixer.music.pause()
+            return True
+        except Exception as exc:
+            print(f"Music disabled ({exc})")
+            return False
+
     def toggle_mute(self):
         self.muted = not self.muted
-        if self.muted and self.ok:
-            pygame.mixer.stop()
-            self.buzz_channel = None
+        if self.ok:
+            if self.muted:
+                pygame.mixer.stop()
+                self.buzz_channel = None
+            try:
+                (pygame.mixer.music.pause if self.muted else pygame.mixer.music.unpause)()
+            except Exception:
+                pass
         return self.muted

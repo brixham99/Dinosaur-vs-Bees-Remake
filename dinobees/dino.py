@@ -10,8 +10,11 @@ from .assets import THEMES
 from .settings import (CHOMP_COOLDOWN, CHOMP_TIME, DINO_BELLY, DINO_BELLY_SHADE,
                        DINO_GREEN, DINO_GREEN_LIGHT, DINO_OUTLINE, DINO_PLATE,
                        DINO_SPOT_RIM,
-                       INVULNERABLE_TIME)
+                       INVULNERABLE_TIME, WIDTH)
 
+TURN_TIME = 0.42                  # seconds for a full about-turn
+TURN_MIN_SCALE = 0.2              # thinnest he gets, edge-on mid-turn
+BUF_LEFT, BUF_RIGHT = 230, 560    # model-space reach behind / in front of the body centre
 BODY_SCALE = 0.36
 HEAD_SCALE = 0.30
 WALK_FRAMES = 24
@@ -188,6 +191,9 @@ class Dino:
         self.wobble_v = 0.0
         self.invuln = 0.0
         self.fainted = 0.0     # >0 once out of hearts (droop animation)
+        self.facing = 1        # 1 = right, -1 = left (where he is heading)
+        self.turn = 0.0        # 0 = facing right ... 1 = facing left
+        self.pivot = float(self.x)
         self.time = 0.0
         self._geom = None
 
@@ -209,6 +215,39 @@ class Dino:
             return True
         return False
 
+    def face(self, direction):
+        """Ask him to face left (-1) or right (1); he turns round smoothly."""
+        if self.fainted <= 0 and direction in (-1, 1):
+            self.facing = direction
+
+    @property
+    def xscale(self):
+        """Horizontal scale of the turn: 1 facing right, -1 facing left,
+        passing through edge-on (about 0) half-way round."""
+        return math.cos(math.pi * smoothstep(self.turn))
+
+    @property
+    def turning(self):
+        return 0.0 < self.turn < 1.0
+
+    def faces(self):
+        """1 or -1 once he is mostly round, 0 while edge-on mid-turn."""
+        s = self.xscale
+        return 1 if s > 0.35 else (-1 if s < -0.35 else 0)
+
+    def from_behind(self, vx):
+        """True if something moving at vx is catching him up from behind
+        (travelling the same way he is facing)."""
+        f = self.faces()
+        return f != 0 and vx * f > 0
+
+    def home_x(self, facing=None):
+        f = self.facing if facing is None else facing
+        return float(self.x) if f > 0 else float(WIDTH - self.x)
+
+    def to_screen(self, p):
+        return (self.pivot + (p[0] - self.x) * self.xscale, p[1])
+
     def sting(self, from_above):
         self.invuln = INVULNERABLE_TIME
         self.wobble_v += -160.0 if from_above else 160.0
@@ -216,7 +255,16 @@ class Dino:
     def update(self, dt, up, down, walk_speed):
         self.time += dt
         stride = 150.0
-        self.walk_phase = (self.walk_phase + walk_speed * dt / stride) % 1.0
+        self.walk_phase = (self.walk_phase + abs(walk_speed) * dt / stride) % 1.0
+        goal = 0.0 if self.facing > 0 else 1.0
+        if self.turn != goal:
+            step = dt / TURN_TIME
+            self.turn = min(goal, self.turn + step) if goal > self.turn else max(goal, self.turn - step)
+        # he strolls across to the other side of the screen as he turns, so
+        # his head always has room in front of him
+        self.pivot += (self.home_x() - self.pivot) * min(1.0, dt * 3.2)
+        if abs(self.pivot - self.home_x()) < 0.3:
+            self.pivot = self.home_x()
         if self.fainted > 0:
             self.fainted += dt
             self.h_target = max(0.0, self.h_target - dt * 0.8)
@@ -324,11 +372,11 @@ class Dino:
 
     def mouth_circle(self):
         g = self.geometry()
-        return g["mouth"], self.MOUTH_R
+        return self.to_screen(g["mouth"]), self.MOUTH_R
 
     def head_circle(self):
         g = self.geometry()
-        return g["head_centre"], self.HEAD_R
+        return self.to_screen(g["head_centre"]), self.HEAD_R
 
     def neck_circles(self):
         g = self.geometry()
@@ -337,7 +385,7 @@ class Dino:
             t = g["ts"][i]
             if t < 0.15:
                 continue
-            out.append(((g["pts"][i][0], g["pts"][i][1]), self.neck_width(t) * 0.5 * 0.85))
+            out.append((self.to_screen(g["pts"][i]), self.neck_width(t) * 0.5 * 0.85))
         return out
 
     def body_hit_circles(self):
@@ -345,11 +393,39 @@ class Dino:
         out = []
         for ox, oy, r in self.body_circles:
             rx, ry = rot(ox, oy, tilt)
-            out.append(((cx + rx, cy + ry), r))
+            out.append((self.to_screen((cx + rx, cy + ry)), r))
         return out
 
     # ----------------------------------------------------------------- draw
     def draw(self, surf, theme):
+        if self.turn == 0.0 and self.pivot == self.x:
+            self._draw_model(surf, theme, 0)
+            return
+        # draw him facing right into a buffer, then turn it: a horizontal
+        # squash through edge-on (smooth-scaled, so antialiased) with a touch
+        # of shade while he is side-on to the light, mirrored past half-way
+        if not hasattr(self, "turn_buf"):
+            self.turn_buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, surf.get_height()), pygame.SRCALPHA)
+        buf = self.turn_buf
+        buf.fill((0, 0, 0, 0))
+        ox = self.x - BUF_LEFT
+        self._draw_model(buf, theme, ox)
+        s = self.xscale
+        k = max(TURN_MIN_SCALE, abs(s))
+        bw, bh = buf.get_size()
+        if k < 0.999:
+            img = pygame.transform.smoothscale(buf, (max(2, int(round(bw * k))), bh))
+            shade = int(255 * (1.0 - 0.28 * (1.0 - k)))
+            img.fill((shade, shade, shade), special_flags=pygame.BLEND_RGB_MULT)
+        else:
+            img = buf
+        if s < 0:
+            img = pygame.transform.flip(img, True, False)
+        sign = 1 if s >= 0 else -1
+        left = self.pivot + min(-BUF_LEFT * k * sign, BUF_RIGHT * k * sign)
+        surf.blit(img, (round(left), 0))
+
+    def _draw_model(self, surf, theme, ox):
         g = self.geometry()
         cols = self.art.neck_cols[theme]
         blink = self.invuln > 0 and int(self.invuln * 12) % 2 == 0
@@ -361,14 +437,14 @@ class Dino:
         if alpha:
             img = img.copy() if img is frame else img
             img.set_alpha(alpha)
-        surf.blit(img, img.get_rect(center=(round(cx), round(cy))))
+        surf.blit(img, img.get_rect(center=(round(cx - ox), round(cy))))
 
         neck = self._render_neck(g, cols)
         if neck is not None:
             ns, pos = neck
             if alpha:
                 ns.set_alpha(alpha)
-            surf.blit(ns, pos)
+            surf.blit(ns, (pos[0] - ox, pos[1]))
 
         head = (self.art.chomps if self.chomping else self.art.heads)[theme]
         anchor = HEAD_ANCHOR if not self.chomping else (HEAD_ANCHOR[0] + CHOMP_EYE_SHIFT[0],
@@ -381,7 +457,7 @@ class Dino:
         rw, rh = himg.get_size()
         if alpha:
             himg.set_alpha(alpha)
-        surf.blit(himg, (round(g["p3"][0] - rx - rw / 2), round(g["p3"][1] - ry - rh / 2)))
+        surf.blit(himg, (round(g["p3"][0] - rx - rw / 2 - ox), round(g["p3"][1] - ry - rh / 2)))
 
     def _render_neck(self, g, cols):
         ss = self.ss

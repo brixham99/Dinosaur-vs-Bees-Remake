@@ -15,6 +15,7 @@ don't let any bee bump into his head, neck or body without being eaten, or he ge
 | --- | --- |
 | Up / W | raise the neck |
 | Down / S | lower the neck |
+| Left / A, Right / D | turn round to face left or right |
 | Space | chomp |
 | P / Esc | pause (Esc on the title screen quits) |
 | Enter | start / play again |
@@ -32,7 +33,20 @@ don't let any bee bump into his head, neck or body without being eaten, or he ge
 * Every 12 bees eaten you go up a level. Bees get faster and more numerous, red bees turn up more
   often, and from level 3 swarms arrive in lines, V shapes and sine-wave snakes. The scenery
   cycles through **Day, Sunset, Night and Volcano Glow**, then round again on a harder ramp.
-* Your best score is saved to `highscore.json` next to the game.
+* **Turning round**: Left and Right turn him to face the other way. He swings round smoothly
+  (edge-on half-way), strolls across to the other side of the screen and the world scrolls the
+  way he is walking. Bees always fly in from the right, so facing left puts his armoured back
+  towards them: **any bee that catches him up from behind bounces off his back plates ("Bonk!")
+  and can't sting him**. He can't eat facing away either, and a yellow bee that bounces off still
+  breaks your combo, so you have to turn back to score. Mid-turn, while he is edge-on, he has no
+  protection at all.
+* **High scores**: a shared online Top 10 (dreamlo) with a flag for each player's country, shown on
+  the title screen in turn with the controls. After a game you type your name (up to 8 letters,
+  digits or spaces; Esc skips). Offline, the score is kept and sent later; the Top 10 is cached in
+  `~/.dinosaur_vs_bees/` and re-fetched on the title screen and hourly. Your local best is also
+  saved to `highscore.json` next to the game.
+* **Music**: the Dino Loop chiptune (`assets/music/dino_loop.ogg`, made with
+  `tools/music/make_dino_loop.py`) loops under the game. M turns the music and sound off and on.
 
 ## Running it
 
@@ -56,6 +70,10 @@ device is available, the game runs silently.
 --mute              start with the sound off
 --hitboxes          draw the collision shapes
 --highscore-file P  keep the high score somewhere else
+--scores-file P     keep the Top 10 cache and unsent scores somewhere else
+--offline           never touch the network
+--demo-scores       fill the Top 10 with sample names (shown only, never sent)
+--show-top10        keep the Top 10 on the title screen
 ```
 
 Headless example:

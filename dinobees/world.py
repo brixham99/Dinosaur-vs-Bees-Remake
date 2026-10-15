@@ -28,11 +28,42 @@ def _crater(surface):
     return int(np.median(xs)), int(np.median(ys))
 
 
+def split_sky(sky):
+    """Separate the painted sky into a plain gradient and a cloud layer.
+
+    The sky art has its clouds baked in, so anything drawn on top of it (the
+    sun, the moon, stars) used to cover the clouds, which made clouds seem to
+    pass behind the sun. Each row's median colour is the clear-sky gradient;
+    pixels whiter than it become the clouds, with alpha measured towards the
+    cloud colour, so the clouds can be drawn in front of the sun."""
+    rgb = pygame.surfarray.array3d(sky).astype(np.float32)        # (w, h, 3)
+    w, h = rgb.shape[:2]
+    grad = np.median(rgb, axis=0)                                  # (h, 3)
+    g = np.broadcast_to(grad[None, :, :], rgb.shape)
+    cloud = np.array([253.0, 249.0, 242.0], np.float32)
+    span = cloud[None, None, :] - g
+    norm = np.maximum((span * span).sum(axis=2), 1.0)
+    a = ((rgb - g) * span).sum(axis=2) / norm
+    a = np.clip((a - 0.03) / 0.97, 0.0, 1.0)
+    col = g + (rgb - g) / np.maximum(a, 0.05)[..., None]
+    col = np.where(a[..., None] > 0.05, col, cloud[None, None, :])
+    grad_surf = pygame.Surface((WIDTH, h)).convert()
+    pygame.surfarray.blit_array(grad_surf, np.repeat(grad[None, :, :], WIDTH, axis=0).astype(np.uint8))
+    clouds = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.surfarray.blit_array(clouds, np.clip(col, 0, 255).astype(np.uint8))
+    pa = pygame.surfarray.pixels_alpha(clouds)
+    pa[...] = (a * 255 + 0.5).astype(np.uint8)
+    del pa
+    return grad_surf, clouds.convert_alpha()
+
+
 class World:
     def __init__(self, rng):
         self.rng = rng
+        sky_grad, clouds = split_sky(assets.load("layer_sky.png", alpha=False))
         base = {
-            "sky": assets.load("layer_sky.png", alpha=False),
+            "sky": sky_grad,
+            "clouds": clouds,
             "mountains": assets.load("layer_mountains.png"),
             "hills": assets.load("layer_hills.png"),
             "ground": assets.load("layer_ground.png"),
@@ -58,7 +89,7 @@ class World:
         for th in THEMES:
             d = {}
             for k, surf in base.items():
-                mul, add = th[k]
+                mul, add = th["sky" if k == "clouds" else k]
                 d[k] = self._split(assets.tint(surf, mul, add))
             mul, add = th["ground"]
             d["fg"] = [assets.tint(s, mul, add) for s in self.fg_base]
@@ -174,12 +205,14 @@ class World:
         target = 1.0 if th["volcano"] else 0.0
         self.volcano_amt += (target - self.volcano_amt) * min(1.0, dt * 1.2)
 
-        # foreground ferns
-        right_edge = max(o[0] - self.scroll * FOREGROUND_FACTOR for o in self.foreground)
+        # foreground ferns (the dino can walk either way, so top up both ends)
         self.foreground = [o for o in self.foreground
-                           if o[0] - self.scroll * FOREGROUND_FACTOR > -200]
-        if right_edge < WIDTH + 100:
-            self.foreground.append(self._new_fg(right_edge + self.rng.uniform(420, 1000)))
+                           if -900 < o[0] - self.scroll * FOREGROUND_FACTOR < WIDTH + 900]
+        xs = [o[0] - self.scroll * FOREGROUND_FACTOR for o in self.foreground] or [WIDTH / 2]
+        if max(xs) < WIDTH + 100:
+            self.foreground.append(self._new_fg(max(xs) + self.rng.uniform(420, 1000)))
+        if min(xs) > -100:
+            self.foreground.append(self._new_fg(min(xs) - self.rng.uniform(420, 1000)))
 
         # volcano embers
         if self.volcano_amt > 0.05:
@@ -250,12 +283,21 @@ class World:
             else:
                 self._tile(surf, cur[k], offsets[k], ys[k])
             if k == "sky":
+                # back to front: gradient, stars, sun or moon, then the clouds
                 self._draw_stars(surf)
                 self._draw_sun(surf, prev, cur, a if fading else None)
+                self._draw_clouds(surf, prev, cur, offsets[k], a if fading else None)
             elif k == "mountains":
                 self._draw_volcano_glow(surf, offsets[k])
                 bottom = self.mountains_y + self.mountains_h
                 surf.fill(cur["mountain_fill"], (0, bottom, WIDTH, self.ground_y + 80 - bottom))
+
+    def _draw_clouds(self, surf, prev, cur, offset, alpha):
+        if alpha is not None:
+            self._tile(surf, prev["clouds"], offset, 0)
+            self._tile(surf, cur["clouds"], offset, 0, alpha=alpha)
+        else:
+            self._tile(surf, cur["clouds"], offset, 0)
 
     def _draw_sun(self, surf, prev, cur, alpha):
         drift = math.sin(self.time * 0.05) * 20
