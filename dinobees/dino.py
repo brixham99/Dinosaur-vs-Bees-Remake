@@ -15,6 +15,7 @@ from .settings import (CHOMP_COOLDOWN, CHOMP_TIME, DINO_BELLY, DINO_BELLY_SHADE,
 TURN_HOLD = 0.55                  # share of each turn step a pose holds before fading on
 TURN_POSE_SCALE = 0.583           # sheet px -> screen: hips-to-feet height matches the side body (161 px)
 TURN_POSES = ("dino_turn_34_right.png", "dino_turn_front.png", "dino_turn_34_left.png")
+NECK_SETTLE_MAX = 0.15            # s to bring the neck from fully up/down to the turn height
 TURN_TIME = 0.42                  # seconds for a full about-turn
 TURN_MIN_SCALE = 0.2              # thinnest he gets, edge-on mid-turn
 BUF_LEFT, BUF_RIGHT = 230, 560    # model-space reach behind / in front of the body centre
@@ -225,6 +226,33 @@ class Dino:
         self.feet_bottom = feet_y + 1        # bottom of the side-on feet (turn poses stand here)
         self.reset()
         self._setup_reach()
+        if not hasattr(art, "turn_neck_h"):
+            art.turn_neck_h = self._match_pose_neck()
+
+    def _head_top(self, h):
+        """Screen y of the top of his head (side-on) at neck height h."""
+        old = (self.h, self._geom)
+        self.h, self._geom = h, None
+        buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, 720), pygame.SRCALPHA)
+        hb = pygame.Surface(buf.get_size(), pygame.SRCALPHA)
+        self._draw_model(buf, 0, self.x - BUF_LEFT, head_surf=hb)
+        self.h, self._geom = old
+        return hb.get_bounding_rect(min_alpha=40).top
+
+    def _match_pose_neck(self):
+        """Neck height whose head top lines up with the three-quarter turn
+        poses, so nothing jumps as the side sprite fades into them."""
+        img, _ = self.art.turn_poses[0][0]
+        a = pygame.surfarray.array_alpha(img)
+        target = self.feet_bottom - img.get_height() + int(np.argmax((a > 40).any(axis=0)))
+        lo, hi = 0.0, 1.0        # head top falls (y shrinks) as h rises
+        for _ in range(14):
+            mid = (lo + hi) / 2
+            if self._head_top(mid) > target:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
 
     def reset(self):
         self.h = 0.45
@@ -238,6 +266,8 @@ class Dino:
         self.invuln = 0.0
         self.fainted = 0.0     # >0 once out of hearts (droop animation)
         self.facing = 1        # 1 = right, -1 = left (where he is heading)
+        self.pending = 1       # requested facing (buffered until the neck has settled)
+        self.settle = None     # [start h, elapsed, duration] while easing the neck for a turn
         self.turn = 0.0        # 0 = facing right ... 1 = facing left
         self.pivot = float(self.x)
         self.time = 0.0
@@ -264,7 +294,33 @@ class Dino:
     def face(self, direction):
         """Ask him to face left (-1) or right (1); he turns round smoothly."""
         if self.fainted <= 0 and direction in (-1, 1):
-            self.facing = direction
+            self.pending = direction      # kept until the neck is settled, never lost
+
+    @property
+    def neck_locked(self):
+        """True while settling the neck for a turn or turning: no neck input."""
+        return self.settle is not None or 0.0 < self.turn < 1.0 or \
+            (self.turn != (0.0 if self.facing > 0 else 1.0))
+
+    def _settle_neck(self, dt):
+        """Ease the neck quickly to the turn height (smoothstep, up to
+        NECK_SETTLE_MAX s for the longest move), then start the turn."""
+        rest = self.art.turn_neck_h
+        if self.settle is None:
+            dist = abs(self.h - rest)
+            dur = NECK_SETTLE_MAX * min(1.0, dist / 0.6)
+            self.settle = [self.h, 0.0, dur]
+        h0, t, dur = self.settle
+        t += dt
+        self.settle[1] = t
+        k = 1.0 if dur <= 1e-6 else smoothstep(t / dur)
+        self.h = h0 + (rest - h0) * k
+        self.h_target = self.h
+        self.h_vel = 0.0
+        if k >= 1.0:
+            self.h = self.h_target = rest
+            self.settle = None
+            self.facing = self.pending
 
     @property
     def xscale(self):
@@ -302,6 +358,12 @@ class Dino:
         self.time += dt
         stride = 150.0
         self.walk_phase = (self.walk_phase + abs(walk_speed) * dt / stride) % 1.0
+        idle = self.turn in (0.0, 1.0) and self.turn == (0.0 if self.facing > 0 else 1.0)
+        if self.fainted > 0:
+            self.settle = None
+            self.pending = self.facing
+        elif self.pending != self.facing and idle or self.settle is not None:
+            self._settle_neck(dt)
         goal = 0.0 if self.facing > 0 else 1.0
         if self.turn != goal:
             step = dt / TURN_TIME
@@ -314,6 +376,9 @@ class Dino:
         if self.fainted > 0:
             self.fainted += dt
             self.h_target = max(0.0, self.h_target - dt * 0.8)
+        elif self.neck_locked:
+            self.h_target = self.h = self.art.turn_neck_h if self.settle is None else self.h
+            self.h_vel = 0.0
         else:
             rate = 1.05
             if up and not down:
