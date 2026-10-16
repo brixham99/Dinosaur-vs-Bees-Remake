@@ -13,7 +13,7 @@ from .settings import (CHOMP_COOLDOWN, CHOMP_TIME, DINO_BELLY, DINO_BELLY_SHADE,
                        INVULNERABLE_TIME, WIDTH)
 
 TURN_HOLD = 0.55                  # share of each turn step a pose holds before fading on
-TURN_POSE_HEIGHT = 285            # px, the generated turn poses (matches the dino with his neck at rest)
+TURN_POSE_SCALE = 0.583           # sheet px -> screen: hips-to-feet height matches the side body (161 px)
 TURN_POSES = ("dino_turn_34_right.png", "dino_turn_front.png", "dino_turn_34_left.png")
 TURN_TIME = 0.42                  # seconds for a full about-turn
 TURN_MIN_SCALE = 0.2              # thinnest he gets, edge-on mid-turn
@@ -142,6 +142,35 @@ def _build_walk_frames(body):
     return frames
 
 
+def _tones(surf):
+    """Median body green and belly yellow of a sprite (opaque pixels)."""
+    rgb = pygame.surfarray.array3d(surf).reshape(-1, 3).astype(np.float32)
+    a = pygame.surfarray.array_alpha(surf).reshape(-1)
+    rgb = rgb[a > 250]
+    lum = rgb @ np.array([0.3, 0.6, 0.1], np.float32)
+    green = rgb[(rgb[:, 0] < 140) & (rgb[:, 1] > 130) & (lum > 110)]
+    belly = rgb[(rgb[:, 0] > 150) & (rgb[:, 1] > 180)]
+    return np.median(green, axis=0), np.median(belly, axis=0)
+
+
+def _grade_to(surf, target):
+    """Grade a sprite so its green and belly tones land on the target's,
+    per channel through black and white (outlines stay dark)."""
+    src = _tones(surf)
+    out = surf.copy()
+    rgb = pygame.surfarray.pixels3d(out)
+    for ch in range(3):
+        xs = [0.0, src[0][ch], src[1][ch], 255.0]
+        ys = [0.0, target[0][ch], target[1][ch], 255.0]
+        order = np.argsort(xs)
+        xs = np.array(xs)[order]
+        ys = np.maximum.accumulate(np.array(ys)[order])
+        lut = np.interp(np.arange(256), xs, ys).astype(np.uint8)
+        rgb[..., ch] = lut[rgb[..., ch]]
+    del rgb
+    return out
+
+
 class DinoArt:
     """All dinosaur sprites, pre-graded for every theme."""
 
@@ -165,10 +194,11 @@ class DinoArt:
         self.frame_size = base_frames[0].get_size()
         # generated turn poses (tools/make_turn_poses.py), pre-graded per theme
         poses = []
+        side_tones = _tones(body)
         for name in TURN_POSES:
-            img = assets.load(name)
-            k = TURN_POSE_HEIGHT / img.get_height()
-            img = pygame.transform.smoothscale(img, (round(img.get_width() * k), TURN_POSE_HEIGHT))
+            img = _grade_to(assets.load(name), side_tones)
+            k = TURN_POSE_SCALE
+            img = pygame.transform.smoothscale(img, (round(img.get_width() * k), round(img.get_height() * k)))
             a = pygame.surfarray.array_alpha(img)
             h = a.shape[1]
             feet = np.where((a[:, h - 14:] > 128).any(axis=1))[0]

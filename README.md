@@ -35,7 +35,7 @@ don't let any bee bump into his head, neck or body without being eaten, or he ge
   cycles through **Day, Sunset, Night and Volcano Glow**, then round again on a harder ramp.
 * **Turning round**: Left and Right turn him to face the other way. He swings round through drawn
   three-quarter, front-on and three-quarter poses (`tools/make_turn_poses.py` cuts them out of
-  `tools/art/dino_turnaround.jpg`), with quick crossfades between them, strolls across to the other side of the screen and the world scrolls the
+  `tools/art/dino_turnaround_v2.jpg`), with quick crossfades between them, strolls across to the other side of the screen and the world scrolls the
   way he is walking. Bees always fly in from the right, so facing left puts his armoured back
   towards them: **any bee that catches him up from behind bounces off his back plates ("Bonk!")
   and can't sting him**. He can't eat facing away either, and a yellow bee that bounces off still

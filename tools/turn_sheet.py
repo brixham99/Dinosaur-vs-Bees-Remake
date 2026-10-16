@@ -16,7 +16,7 @@ g.spawner.update = lambda dt, n: []
 for _ in range(40):
     g.update(DT)
 d = g.dino
-d.h = d.h_target = 0.75
+d.h = d.h_target = 0.45   # neck at rest
 d._geom = None
 
 def turn_for(u):
