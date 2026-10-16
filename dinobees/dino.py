@@ -12,6 +12,9 @@ from .settings import (CHOMP_COOLDOWN, CHOMP_TIME, DINO_BELLY, DINO_BELLY_SHADE,
                        DINO_SPOT_RIM,
                        INVULNERABLE_TIME, WIDTH)
 
+TURN_HOLD = 0.55                  # share of each turn step a pose holds before fading on
+TURN_POSE_HEIGHT = 285            # px, the generated turn poses (matches the dino with his neck at rest)
+TURN_POSES = ("dino_turn_34_right.png", "dino_turn_front.png", "dino_turn_34_left.png")
 TURN_TIME = 0.42                  # seconds for a full about-turn
 TURN_MIN_SCALE = 0.2              # thinnest he gets, edge-on mid-turn
 BUF_LEFT, BUF_RIGHT = 230, 560    # model-space reach behind / in front of the body centre
@@ -160,6 +163,18 @@ class DinoArt:
                 "spot_rim": DINO_SPOT_RIM,
             }.items()})
         self.frame_size = base_frames[0].get_size()
+        # generated turn poses (tools/make_turn_poses.py), pre-graded per theme
+        poses = []
+        for name in TURN_POSES:
+            img = assets.load(name)
+            k = TURN_POSE_HEIGHT / img.get_height()
+            img = pygame.transform.smoothscale(img, (round(img.get_width() * k), TURN_POSE_HEIGHT))
+            a = pygame.surfarray.array_alpha(img)
+            h = a.shape[1]
+            feet = np.where((a[:, h - 14:] > 128).any(axis=1))[0]
+            foot_cx = (feet[0] + feet[-1]) / 2 if len(feet) else img.get_width() / 2
+            poses.append((img, foot_cx))
+        self.turn_poses = [[(assets.tint(img, *th["sprite"]), fc) for img, fc in poses] for th in THEMES]
 
 
 class Dino:
@@ -177,6 +192,7 @@ class Dino:
         self.ss = 2
         self.ss_buf = pygame.Surface((900 * self.ss, 760 * self.ss), pygame.SRCALPHA)
         self.mask_buf = pygame.Surface((900 * self.ss, 760 * self.ss), pygame.SRCALPHA)
+        self.feet_bottom = feet_y + 1        # bottom of the side-on feet (turn poses stand here)
         self.reset()
         self._setup_reach()
 
@@ -397,76 +413,49 @@ class Dino:
         return out
 
     # ----------------------------------------------------------------- draw
-    TURN_STEP = 30   # degrees between turn frames: 30, 60, 90 (front), 120, 150
-
     def turn_view(self):
-        """(yaw degrees snapped to a turn frame, mirrored?) for the current turn."""
-        step = int(round(180 * smoothstep(self.turn) / self.TURN_STEP)) * self.TURN_STEP
-        return step, step > 90
+        """(pose index 0..4, crossfade 0..1 to the next pose) for the turn.
+        0 side-on right, 1 three-quarter right, 2 front, 3 three-quarter
+        left, 4 side-on left. Each pose holds, then fades quickly into the next."""
+        u = smoothstep(self.turn) * 4.0
+        i = min(3, int(u))
+        f = u - i
+        if self.turn >= 1.0:
+            return 4, 0.0
+        return i, max(0.0, min(1.0, (f - TURN_HOLD) / (1.0 - TURN_HOLD)))
 
     def draw(self, surf, theme):
-        step, mirrored = self.turn_view()
-        if step == 0 and self.pivot == self.x:
-            self.turn_cache = {}
+        if self.turn == 0.0 and self.pivot == self.x:
             self._draw_model(surf, theme, 0)
             return
-        if not hasattr(self, "turn_buf"):
-            self.turn_buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, surf.get_height()), pygame.SRCALPHA)
-            self.head_buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, surf.get_height()), pygame.SRCALPHA)
-            self.turn_cache = {}
-        buf = self.turn_buf
-        ox = self.x - BUF_LEFT
-        if step in (0, 180):
-            self.turn_cache = {}
-            buf.fill((0, 0, 0, 0))
-            self._draw_model(buf, theme, ox)
-            img = pygame.transform.flip(buf, True, False) if step == 180 else buf
-            left = self.pivot - BUF_RIGHT if step == 180 else self.pivot - BUF_LEFT
-            surf.blit(img, (round(left), 0))
-            return
-        key = (step, theme, self.invuln > 0 and int(self.invuln * 12) % 2 == 0)
-        if key not in self.turn_cache:
-            self.turn_cache = {k: v for k, v in self.turn_cache.items() if k[0] == step}
-            self.turn_cache[key] = self._build_turn_frame(theme, ox, 180 - step if mirrored else step)
-        img, off = self.turn_cache[key]
-        if mirrored:
-            img = pygame.transform.flip(img, True, False)
-            left = self.pivot - (img.get_width() + off)
-        else:
-            left = self.pivot + off
-        surf.blit(img, (round(left), 0))
+        i, f = self.turn_view()
+        blink = self.invuln > 0 and int(self.invuln * 12) % 2 == 0
+        if f > 0.985:
+            i, f = i + 1, 0.0
+        self._draw_pose(surf, theme, i, None if not blink else 110)
+        if f > 0.01:
+            a = int(255 * f)
+            self._draw_pose(surf, theme, i + 1, a if not blink else min(a, 110))
 
-    def _build_turn_frame(self, theme, ox, phi):
-        from . import turn
-        buf, hb = self.turn_buf, self.head_buf
-        buf.fill((0, 0, 0, 0))
-        hb.fill((0, 0, 0, 0))
-        self._draw_model(buf, theme, ox, head_surf=hb, skip_neck=True)
-        rect = hb.get_bounding_rect(min_alpha=8)
-        side = hb.subsurface(rect).copy()
-        if not hasattr(self.art, "front_heads"):
-            head_art = assets.load("dino_head.png")
-            self.art.front_heads = [turn.build_front_head(assets.tint(head_art, *th["sprite"]), HEAD_SCALE, {
-                **self.art.neck_cols[i], "dark": assets.tint_colour(DINO_GREEN_DARK, *th["sprite"])})
-                for i, th in enumerate(THEMES)]
-        front = self.art.front_heads[theme]
-        cx, cy, tilt = self.body_pose()
-        fw, fh = self.art.frame_size
-        body_rect = pygame.Rect(0, 0, fw, fh)
-        body_rect.center = (round(cx - ox), round(cy))
-        k = self.k
-        legs = [(body_rect.left + x0 * k, body_rect.left + x1 * k, far) for x0, x1, _, far in LEGS]
-        hinge = body_rect.top + LEG_HINGE_Y * k
-        g = self.geometry()
-        pts = g["pts"] - np.array([ox, 0.0])
-        der = g["der"]
-        tang = der / np.maximum(np.linalg.norm(der, axis=1, keepdims=True), 1e-6)
-        nup = np.stack([tang[:, 1], -tang[:, 0]], axis=1)
-        keep = g["ts"] >= -0.02
-        neck = (pts[keep], np.array([self.neck_width(t) for t in g["ts"][keep]]), nup[keep], g["ts"][keep],
-                self.art.neck_cols[theme])
-        return turn.build_frame(buf, cx - ox, self.feet_y, body_rect, hinge, legs, phi,
-                                ({"side": side, "front": front}, rect.center), neck)
+    def _draw_pose(self, surf, theme, i, alpha):
+        if i in (0, 4):
+            if not hasattr(self, "turn_buf"):
+                self.turn_buf = pygame.Surface((BUF_LEFT + BUF_RIGHT, surf.get_height()), pygame.SRCALPHA)
+            buf = self.turn_buf
+            buf.fill((0, 0, 0, 0))
+            self._draw_model(buf, theme, self.x - BUF_LEFT)
+            img = pygame.transform.flip(buf, True, False) if i == 4 else buf
+            left = self.pivot - BUF_RIGHT if i == 4 else self.pivot - BUF_LEFT
+            if alpha is not None:
+                img.set_alpha(alpha)
+            surf.blit(img, (round(left), 0))
+            img.set_alpha(255)
+            return
+        img, foot_cx = self.art.turn_poses[theme][i - 1]
+        if alpha is not None:
+            img.set_alpha(alpha)
+        surf.blit(img, (round(self.pivot - foot_cx), round(self.feet_bottom - img.get_height())))
+        img.set_alpha(255)
 
     def _draw_model(self, surf, theme, ox, head_surf=None, skip_neck=False):
         g = self.geometry()

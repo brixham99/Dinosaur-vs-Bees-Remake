@@ -19,25 +19,26 @@ d = g.dino
 d.h = d.h_target = 0.75
 d._geom = None
 
-def turn_for(step):
+def turn_for(u):
+    """turn value giving pose position u (0..4)."""
     lo, hi = 0.0, 1.0
     for _ in range(40):
         mid = (lo + hi) / 2
-        if 180 * smoothstep(mid) < step:
+        if 4 * smoothstep(mid) < u:
             lo = mid
         else:
             hi = mid
     return (lo + hi) / 2
 
 layers = []
-for step in range(0, 181, 30):
+NAMES = {0: "side right", 1: "3/4 right", 2: "front", 3: "3/4 left", 4: "side left"}
+for step in (0, 0.8, 1, 1.8, 2, 2.8, 3, 3.8, 4):
     s = pygame.Surface((1280, 720), pygame.SRCALPHA)
-    d.turn = turn_for(step) if step not in (0, 180) else (0.0 if step == 0 else 1.0)
+    d.turn = turn_for(step) if step not in (0, 4) else (0.0 if step == 0 else 1.0)
     d.pivot = 640.0
-    d.turn_cache = {}
     t0 = time.perf_counter()
     d.draw(s, 0)
-    print(f"{step:3d} deg: {(time.perf_counter() - t0) * 1000:.1f} ms")
+    print(f"{step}: {(time.perf_counter() - t0) * 1000:.1f} ms")
     layers.append((step, s))
 box = layers[0][1].get_bounding_rect()
 for _, s in layers:
@@ -47,7 +48,7 @@ pygame.font.init()
 f = pygame.font.Font(None, 44)
 zoom = 1.6
 cw, ch = int(box.w * zoom), int(box.h * zoom)
-cols = 4
+cols = 5
 rows = 2
 sheet = pygame.Surface((cw * cols, ch * rows))
 sheet.fill((255, 255, 255))
@@ -57,7 +58,7 @@ for i, (step, s) in enumerate(layers):
     pygame.draw.rect(cell, (150, 200, 110), (0, d.feet_y - 6 - box.top, box.w, box.h))
     cell.blit(s, (-box.left, -box.top))
     cell = pygame.transform.smoothscale(cell, (cw - 6, ch - 6))
-    label = {0: "0\u00b0 side", 90: "90\u00b0 front", 180: "180\u00b0 side"}.get(step, f"{step}\u00b0")
+    label = NAMES.get(step, "crossfade")
     cell.blit(f.render(label, True, (30, 30, 50)), (12, 10))
     sheet.blit(cell, ((i % cols) * cw + 3, (i // cols) * ch + 3))
 pygame.image.save(sheet, sheet_path)
@@ -71,7 +72,7 @@ for _ in range(20):
 d.face(-1)
 for _ in range(200):
     g.update(DT)
-    if d.turn_view()[0] == 90:
+    if d.turn_view() == (2, 0.0):
         break
 g.draw()
 pygame.image.save(g.screen, ingame_path)

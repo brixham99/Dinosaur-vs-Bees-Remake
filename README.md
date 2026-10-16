@@ -33,9 +33,9 @@ don't let any bee bump into his head, neck or body without being eaten, or he ge
 * Every 12 bees eaten you go up a level. Bees get faster and more numerous, red bees turn up more
   often, and from level 3 swarms arrive in lines, V shapes and sine-wave snakes. The scenery
   cycles through **Day, Sunset, Night and Volcano Glow**, then round again on a harder ramp.
-* **Turning round**: Left and Right turn him to face the other way. He swings round through five
-  in-between frames (three-quarters, facing you, three-quarters) built as a solid 2.5D model from
-  his own art, strolls across to the other side of the screen and the world scrolls the
+* **Turning round**: Left and Right turn him to face the other way. He swings round through drawn
+  three-quarter, front-on and three-quarter poses (`tools/make_turn_poses.py` cuts them out of
+  `tools/art/dino_turnaround.jpg`), with quick crossfades between them, strolls across to the other side of the screen and the world scrolls the
   way he is walking. Bees always fly in from the right, so facing left puts his armoured back
   towards them: **any bee that catches him up from behind bounces off his back plates ("Bonk!")
   and can't sting him**. He can't eat facing away either, and a yellow bee that bounces off still
