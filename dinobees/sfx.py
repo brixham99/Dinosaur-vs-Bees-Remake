@@ -131,8 +131,10 @@ class Sound:
             self.buzz_channel.set_volume(max(0.0, min(1.0, level)) * 0.5)
 
     def start_music(self, path, volume=0.4):
-        """Loop the Dino Loop chiptune quietly under everything."""
+        """Loop the in-game music from the top (gameplay only; the title is silent)."""
         self.music_path = path
+        self.music_on = True
+        self.music_held = False
         if not self.ok:
             return False
         try:
@@ -144,7 +146,35 @@ class Sound:
             return True
         except Exception as exc:
             print(f"Music disabled ({exc})")
+            self.music_on = False
             return False
+
+    def stop_music(self, fade_ms=0):
+        """Stop the music, fading it out over fade_ms if given."""
+        self.music_on = False
+        self.music_held = False
+        if not self.ok:
+            return
+        try:
+            if fade_ms > 0 and pygame.mixer.music.get_busy():
+                pygame.mixer.music.fadeout(fade_ms)
+            else:
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
+
+    def hold_music(self, held):
+        """Pause (held=True) or resume the music, e.g. for the pause screen."""
+        self.music_held = held
+        if not self.ok or not getattr(self, "music_on", False):
+            return
+        try:
+            if held or self.muted:
+                pygame.mixer.music.pause()
+            else:
+                pygame.mixer.music.unpause()
+        except Exception:
+            pass
 
     def toggle_mute(self):
         self.muted = not self.muted
@@ -153,7 +183,10 @@ class Sound:
                 pygame.mixer.stop()
                 self.buzz_channel = None
             try:
-                (pygame.mixer.music.pause if self.muted else pygame.mixer.music.unpause)()
+                if self.muted or getattr(self, "music_held", False):
+                    pygame.mixer.music.pause()
+                elif getattr(self, "music_on", False):
+                    pygame.mixer.music.unpause()
             except Exception:
                 pass
         return self.muted

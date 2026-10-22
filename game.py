@@ -30,7 +30,7 @@ from dinobees.settings import ASSET_DIR
 from dinobees.sfx import Sound
 from dinobees.world import World
 
-MUSIC_FILE = os.path.join(ASSET_DIR, "music", "dino_loop.ogg")
+MUSIC_FILE = os.path.join(ASSET_DIR, "music", "game_music.ogg")
 TITLE_PANEL_TIME = 7.0       # title alternates: how to play <-> Top 10, 7 s each
 BOARD_REFRESH = 3600.0       # re-fetch the Top 10 (and retry unsent scores) hourly
 DEMO_SCORES = [("Archie", 2480, "GB"), ("Holly", 2210, "GB"), ("Rex", 1890, "US"), ("Nathan", 1650, "GB"),
@@ -116,7 +116,7 @@ class Game:
         self.reset_game(level=1)
         self.title_bees = []
         self.world.set_theme(0, instant=True)
-        self.sound.start_music(MUSIC_FILE)   # paused while the sound is off
+        # the title screen is silent; the music starts with each game
 
     # ------------------------------------------------------------ lifecycle
     def reset_game(self, level=1):
@@ -150,6 +150,7 @@ class Game:
         self.banner = 2.6
         self.stats["games"] += 1
         self.sound.play("start", 0.7)
+        self.sound.start_music(MUSIC_FILE)   # from the top; paused while the sound is off
         self.log(f"game {self.stats['games']} started at level {self.level}")
 
     def log(self, msg):
@@ -183,17 +184,20 @@ class Game:
             elif self.state == "play":
                 if k in (pygame.K_p, pygame.K_ESCAPE):
                     self.state = "paused"
+                    self.sound.hold_music(True)
                 elif k == pygame.K_SPACE:
                     if self.dino.try_chomp():
                         self.sound.play("chomp", 0.6)
             elif self.state == "paused":
                 if k in (pygame.K_p, pygame.K_ESCAPE):
                     self.state = "play"
+                    self.sound.hold_music(False)
             elif self.state == "gameover":
                 if k in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     self.start_game()
                 elif k == pygame.K_ESCAPE:
                     self.state = "title"
+                    self.sound.stop_music()
                     self.title_t = 0.0
                     self.board.refresh()
                     self.world.set_theme(0)
@@ -450,6 +454,7 @@ class Game:
         self.over_timer = 0.0
         self.sound.play("gameover", 0.7)
         self.sound.set_buzz(0.0)
+        self.sound.stop_music(fade_ms=1500)
         self.stats["max_score"] = max(self.stats["max_score"], self.score)
         if self.score > self.high_score:
             self.high_score = self.score

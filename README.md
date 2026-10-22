@@ -46,8 +46,8 @@ don't let any bee bump into his head, neck or body without being eaten, or he ge
   digits or spaces; Esc skips). Offline, the score is kept and sent later; the Top 10 is cached in
   `~/.dinosaur_vs_bees/` and re-fetched on the title screen and hourly. Your local best is also
   saved to `highscore.json` next to the game.
-* **Music**: the Dino Loop chiptune (`assets/music/dino_loop.ogg`, made with
-  `tools/music/make_dino_loop.py`) loops under the game. M turns the music and sound off and on.
+* **Music**: a seamless loop (`assets/music/game_music.ogg`) plays during
+  the game, starting from the top each game and fading out at game over. The title screen is silent. M turns the music and sound off and on.
 
 ## Running it
 
