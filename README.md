@@ -1,13 +1,13 @@
 # Dinosaur vs Bees (Remake)
 
+![Dinosaur vs Bees Remake screenshot](docs/screenshot.png)
+
 A finished, polished remake of [Dinosaur vs Bees](https://github.com/brixham99/Dinosaur-vs-Bees),
 written in Python with Pygame.
 
 A long-necked sauropod strolls through a prehistoric valley while bees drift in from the right.
 Raise and lower his neck to snap up the yellow bees, but steer clear of the angry red ones and
 don't let any bee bump into his head, neck or body without being eaten, or he gets stung.
-
-![Gameplay screenshot](docs/screenshot.png)
 
 ## How to play
 
